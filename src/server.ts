@@ -8,15 +8,15 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import { config } from './config';
 import { ping } from './db/pool';
 import usersRouter from './routes/users';
+import authRouter from './routes/auth';  // <-- add near the other imports at top
 import dentistsRouter from './routes/dentists';
 import appointmentsRouter from './routes/appointments';
 
 const app = express();
 
-app.use(cors({
-  origin: config.webOrigin === '*' ? true : config.webOrigin.split(','),
-  credentials: false,
-}));
+const allowedOrigins = (process.env.WEB_ORIGIN ?? '').split(',').map(s => s.trim());
+app.use(cors({ origin: allowedOrigins }));
+
 app.use(express.json({ limit: '256kb' }));
 
 app.get('/api/health', (_req: Request, res: Response) => {
@@ -29,6 +29,9 @@ app.get('/api/health', (_req: Request, res: Response) => {
 });
 
 app.use('/api/users', usersRouter);
+
+app.use('/api/auth', authRouter);
+
 app.use('/api/dentists', dentistsRouter);
 app.use('/api/appointments', appointmentsRouter);
 
