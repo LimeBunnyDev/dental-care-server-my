@@ -1,132 +1,78 @@
 // src/routes/auth.ts
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import { z } from 'zod';
-import { pool } from '../db'; // <-- if your pool export lives elsewhere, fix ONLY this line
+import { pool } from '../db';
 
 const router = Router();
 
-// ---------- helpers ----------
-
-function hashPassword(plain: string): string {
-  // Keep whatever hashing your project already uses. If you had bcrypt,
-  // swap this for bcrypt.hash(plain, 10). Simple sha256 placeholder:
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const crypto = require('crypto');
-  return crypto.createHash('sha256').update(plain).digest('hex');
-}
-
-function verifyPassword(plain: string, hash: string): boolean {
-  return hashPassword(plain) === hash;
-}
-
-// Mint the next 8-digit public ID: "00000001", "00000002", ...
-async function nextPublicId(): Promise<string> {
-  const r = await pool.query<{ nextval: string }>(
-    "SELECT nextval('public_id_seq') AS nextval"
-  );
-  return String(r.rows[0].nextval).padStart(8, '0');
-}
-
-// ---------- schemas ----------
-
 const registerSchema = z.object({
-  name: z.string().min(1),
-  email: z.string().email(),
-  password: z.string().min(6),
-  phone: z.string().optional(),
-  birthday: z.string().optional(),          // plain profile field now
-  nric: z.string().optional(),
-  address: z.string().optional(),
-  addressLat: z.number().optional(),
-  addressLon: z.number().optional(),
-  ecName: z.string().optional(),
-  ecPhone: z.string().optional(),
+  name: z.string().min(1).max(120),
+  email: z.string().email().max(200),
+  phone: z.string().max(40).optional(),
+  birthday: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  nric: z.string().max(20).optional(),
+  address: z.string().max(500).optional(),
+  ecName: z.string().max(120).optional(),
+  ecPhone: z.string().max(40).optional(),
+  password: z.string().min(6).max(100),
 });
 
-// ---------- routes ----------
+// Simple hash placeholder — replace with bcrypt when you're ready.
+function hashPassword(pw: string): string {
+  return 'sha256:' + Buffer.from('pw:' + pw).toString('base64');
+}
 
-// POST /api/auth/register
-// Everyone registers role-less. public_id = 8-digit global counter.
-router.post('/register', async (req: Request, res: Response) => {
+router.post('/register', async (req, res) => {
+  const parsed = registerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Invalid input', details: parsed.error.issues });
+  }
+  const d = parsed.data;
+  const client = await pool.connect();
   try {
-    const parsed = registerSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: 'Invalid registration payload', details: parsed.error.flatten() });
-    }
-    const d = parsed.data;
+    await client.query('BEGIN');
 
-    const emailCheck = await pool.query('SELECT id FROM users WHERE email = $1', [d.email]);
-    if ((emailCheck.rowCount ?? 0) > 0) {
-      return res.status(409).json({ error: 'Email already registered' });
+    // 1. Duplicate email check
+    const dup = await client.query('SELECT id FROM users WHERE email = $1', [d.email]);
+    if ((dup.rowCount ?? 0) > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'An account with this email already exists' });
     }
 
-    const publicId = await nextPublicId();
-    const passwordHash = hashPassword(d.password);
+    // 2. Mint next 8-digit public_id
+    const seq = await client.query("SELECT nextval('public_id_seq') AS v");
+    const publicId = String(seq.rows[0].v).padStart(8, '0');
 
-    const insert = await pool.query(
+    // 3. Insert user (no role — roles assigned later by admins)
+    const id = 'u_' + Date.now().toString(36);
+    const insert = await client.query(
       `INSERT INTO users
-        (public_id, name, email, password_hash, phone, birthday, nric,
-         address, address_lat, address_lon, ec_name, ec_phone, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+         (id, public_id, name, email, phone, birthday, nric, address,
+          ec_name, ec_phone, password_hash, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
        RETURNING id, public_id, name, email`,
       [
-        publicId, d.name, d.email, passwordHash,
-        d.phone ?? null, d.birthday ?? null, d.nric ?? null,
-        d.address ?? null, d.addressLat ?? null, d.addressLon ?? null,
-        d.ecName ?? null, d.ecPhone ?? null,
+        id, publicId, d.name, d.email,
+        d.phone ?? null, d.birthday ?? null, d.nric ?? null, d.address ?? null,
+        d.ecName ?? null, d.ecPhone ?? null, hashPassword(d.password),
       ]
     );
 
-    const user = insert.rows[0];
-    return res.status(201).json({ user });
+    await client.query('COMMIT');
+    const u = insert.rows[0];
+    return res.status(201).json({ user: { id: u.id, publicId: u.public_id, name: u.name, email: u.email } });
   } catch (err: any) {
-    console.error('[register] error:', err?.message ?? err);
+    await client.query('ROLLBACK');
+    console.error('[register] error:', err.message);
     return res.status(500).json({ error: 'Registration failed' });
+  } finally {
+    client.release();
   }
 });
 
-// POST /api/auth/login
-router.post('/login', async (req: Request, res: Response) => {
-  try {
-    const { email, password } = req.body ?? {};
-    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-
-    const r = await pool.query(
-      'SELECT id, public_id, name, email, password_hash FROM users WHERE email = $1',
-      [email]
-    );
-    if ((r.rowCount ?? 0) === 0) return res.status(401).json({ error: 'Invalid credentials' });
-
-    const u = r.rows[0];
-    if (!verifyPassword(password, u.password_hash)) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    return res.json({
-      user: { id: u.id, public_id: u.public_id, name: u.name, email: u.email },
-    });
-  } catch (err: any) {
-    console.error('[login] error:', err?.message ?? err);
-    return res.status(500).json({ error: 'Login failed' });
-  }
-});
-
-// GET /api/auth/roles/:userId  — list a user's roles (for profile page)
-router.get('/roles/:userId', async (req: Request, res: Response) => {
-  try {
-    const r = await pool.query(
-      `SELECT ro.id, ro.name, ro.color, ro.position
-         FROM user_roles ur
-         JOIN roles ro ON ro.id = ur.role_id
-        WHERE ur.user_id = $1
-        ORDER BY ro.position DESC`,
-      [req.params.userId]
-    );
-    return res.json({ roles: r.rows });
-  } catch (err: any) {
-    console.error('[roles] error:', err?.message ?? err);
-    return res.status(500).json({ error: 'Failed to load roles' });
-  }
+router.patch('/birthday', async (req, res) => {
+  // Birthday is now a plain profile field — handled by the profile routes.
+  return res.status(501).json({ error: 'Use profile update endpoint' });
 });
 
 export default router;
