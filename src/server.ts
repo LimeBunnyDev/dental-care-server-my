@@ -8,7 +8,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import { config } from './config';
 import { ping } from './db/pool';
 import usersRouter from './routes/users';
-import authRouter from './routes/auth';  // <-- add near the other imports at top
+import { authRouter } from './routes/auth';
 import dentistsRouter from './routes/dentists';
 import appointmentsRouter from './routes/appointments';
 
