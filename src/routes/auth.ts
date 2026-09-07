@@ -1,47 +1,31 @@
-// src/routes/auth.ts
-import { Router, type Request, type Response } from 'express';
+// src/routes/auth.ts — v3: 8-digit public_id, no role/invite codes at signup
+import { Router } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
-import { pool } from '../db/pool';
+import { pool } from '../db';
 
 const router = Router();
 
-// ---------------- helpers ----------------
-
-/** Mint the next 8-digit public ID, e.g. "00000001". */
-async function nextPublicId(client: any): Promise<string> {
-  const r = await client.query(`SELECT nextval('public_id_seq') AS n`);
-  const n = r.rows[0].n as string | number;
-  return String(n).padStart(8, '0');
-}
-
-/** Random internal PK, since public_id is not the PK. */
-function internalId(): string {
-  return 'u_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-}
-
-// ---------------- POST /api/auth/register ----------------
-// Everyone registers role-less via the public signup page.
-// Roles are assigned later by permitted users in the admin panel.
-
 const registerSchema = z.object({
-  name: z.string().min(2),
+  name: z.string().min(1),
   email: z.string().email(),
-  phone: z.string().min(6),
-  nric: z.string().min(5).optional(),
-  birthday: z.string().optional(),          // plain profile field, no ID coupling
-  address: z.string().optional(),
+  password: z.string().min(6),
+  phone: z.string().optional(),
+  nric: z.string().optional(),
+  birthday: z.string().optional(), // YYYY-MM-DD — profile field only, NOT part of the ID
+  address: z.string().optional(),  // stored into users.address_line1
   addressLat: z.number().optional(),
   addressLon: z.number().optional(),
   ecName: z.string().optional(),
   ecPhone: z.string().optional(),
-  password: z.string().min(6),
 });
 
-router.post('/register', async (req: Request, res: Response) => {
+// POST /api/auth/register
+// Everyone registers role-less. public_id = next value of global 8-digit counter.
+router.post('/register', async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: 'Invalid input', details: parsed.error.issues });
+    return res.status(400).json({ error: 'Invalid registration data', details: parsed.error.flatten() });
   }
   const d = parsed.data;
 
@@ -49,89 +33,44 @@ router.post('/register', async (req: Request, res: Response) => {
   try {
     await client.query('BEGIN');
 
-    // duplicate email check
+    // 1) Duplicate email check
     const dup = await client.query('SELECT id FROM users WHERE email = $1', [d.email.toLowerCase()]);
     if ((dup.rowCount ?? 0) > 0) {
       await client.query('ROLLBACK');
-      return res.status(409).json({ error: 'Email already registered' });
+      return res.status(409).json({ error: 'An account with this email already exists' });
     }
 
-    const publicId = await nextPublicId(client);
-    const passwordHash = await bcrypt.hash(d.password, 10);
-    const id = internalId();
+    // 2) Mint the next 8-digit public_id
+    const seq = await client.query(`SELECT nextval('public_id_seq') AS n`);
+    const publicId = String(seq.rows[0].n).padStart(8, '0');
 
-    await client.query(
+    // 3) Insert the user (role-less; roles assigned later via admin panel)
+    const internalId = 'u_' + Date.now().toString(36);
+    const passwordHash = await bcrypt.hash(d.password, 10);
+    const inserted = await client.query(
       `INSERT INTO users
-         (id, public_id, name, email, phone, birthday, nric,
-          address_line1, address_lat, address_lon,
-          ec_name, ec_phone, password_hash, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())`,
+         (id, public_id, name, email, password_hash, phone, nric, birthday,
+          address_line1, address_lat, address_lon, ec_name, ec_phone, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())
+       RETURNING id, public_id, name, email`,
       [
-        id,
-        publicId,
-        d.name,
-        d.email.toLowerCase(),
-        d.phone,
-        d.birthday ?? null,
-        d.nric ?? null,
-        d.address ?? null,
-        d.addressLat ?? null,
-        d.addressLon ?? null,
-        d.ecName ?? null,
-        d.ecPhone ?? null,
+        internalId, publicId, d.name, d.email.toLowerCase(),
         passwordHash,
+        d.phone ?? null, d.nric ?? null, d.birthday ?? null,
+        d.address ?? null, d.addressLat ?? null, d.addressLon ?? null,
+        d.ecName ?? null, d.ecPhone ?? null,
       ]
     );
 
     await client.query('COMMIT');
-    return res.status(201).json({ ok: true, userId: id, publicId });
-  } catch (e) {
+    const u = inserted.rows[0];
+    return res.status(201).json({ user: { id: u.id, public_id: u.public_id, name: u.name, email: u.email } });
+  } catch (err: any) {
     await client.query('ROLLBACK');
-    console.error('[register]', e);
-    return res.status(500).json({ error: 'Internal error' });
+    console.error('[register] error:', err);
+    return res.status(500).json({ error: 'Registration failed' });
   } finally {
     client.release();
-  }
-});
-
-// ---------------- POST /api/auth/login ----------------
-
-router.post('/login', async (req: Request, res: Response) => {
-  const schema = z.object({ email: z.string().email(), password: z.string().min(1) });
-  const parsed = schema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Invalid input' });
-
-  try {
-    const r = await pool.query('SELECT * FROM users WHERE email = $1', [parsed.data.email.toLowerCase()]);
-    const user = r.rows[0];
-    if (!user) return res.status(401).json({ error: 'Invalid email or password' });
-
-    const ok = await bcrypt.compare(parsed.data.password, user.password_hash);
-    if (!ok) return res.status(401).json({ error: 'Invalid email or password' });
-
-    // roles for this user
-    const roles = await pool.query(
-      `SELECT ro.id, ro.name, ro.position FROM user_roles ur
-       JOIN roles ro ON ro.id = ur.role_id WHERE ur.user_id = $1`,
-      [user.id]
-    );
-
-    return res.json({
-      ok: true,
-      user: {
-        id: user.id,
-        publicId: user.public_id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        birthday: user.birthday,
-        nric: user.nric,
-      },
-      roles: roles.rows,
-    });
-  } catch (e) {
-    console.error('[login]', e);
-    return res.status(500).json({ error: 'Internal error' });
   }
 });
 
