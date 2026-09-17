@@ -1,8 +1,8 @@
 /**
  * /api/dentists — public roster of users who hold the Dentist role.
  *
- * Read-only. Anyone authenticated may call this (patients need it to book).
- * Returns only non-sensitive fields.
+ * Returns profile metadata for dentists. Fields with no value fall back to
+ * sensible defaults derived from the username, so the UI always renders.
  */
 
 import { Router, type Request, type Response } from 'express';
@@ -13,12 +13,54 @@ import { param } from '../lib/http';
 
 const router = Router();
 
+// ------------------------------------------------------------
+// Fallback helpers
+// ------------------------------------------------------------
+
+const ACCENT_PALETTE = [
+  '#0EA5E9', // sky
+  '#10B981', // emerald
+  '#F59E0B', // amber
+  '#A855F7', // purple
+  '#EF4444', // red
+  '#EC4899', // pink
+  '#14B8A6', // teal
+  '#6366F1', // indigo
+];
+
+/** Deterministic palette pick from a user id. */
+function pickAccent(userId: string): string {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = (hash * 31 + userId.charCodeAt(i)) | 0;
+  }
+  return ACCENT_PALETTE[Math.abs(hash) % ACCENT_PALETTE.length];
+}
+
+/** "alice" → "AL"; "Dr. Sarah Chen" → "SC"; "bob" → "BO". */
+function deriveInitials(displayName: string | null, username: string): string {
+  const source = (displayName?.trim() || username).trim();
+  const words = source.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length === 0) return '??';
+  if (words.length === 1) {
+    return words[0].slice(0, 2).toUpperCase();
+  }
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
 function shapeDentist(u: any) {
+  const displayName = u.display_name ?? u.username;
   return {
-    id: u.id,
-    public_id: u.public_id,
-    username: u.username,
-    display_name: u.display_name ?? u.username,
+    id:           u.id,
+    public_id:    u.public_id,
+    username:     u.username,
+    display_name: displayName,
+    name:         displayName,                         // alias for the UI's `d.name`
+    title:        u.dentist_title     ?? null,
+    specialty:    u.dentist_specialty ?? null,
+    bio:          u.dentist_bio       ?? null,
+    initials:     u.dentist_initials  ?? deriveInitials(u.display_name, u.username),
+    accentColor:  u.dentist_accent    ?? pickAccent(u.id),
   };
 }
 
@@ -30,7 +72,10 @@ router.get('/', requireAuth, async (_req: Request, res: Response) => {
   try {
     const rows = await withClient((c) =>
       c.query(
-        `SELECT DISTINCT u.id, u.public_id, u.username, u.display_name
+        `SELECT DISTINCT
+           u.id, u.public_id, u.username, u.display_name,
+           u.dentist_title, u.dentist_specialty, u.dentist_bio,
+           u.dentist_initials, u.dentist_accent
          FROM users u
          JOIN user_roles ur ON ur.user_id = u.id
          JOIN roles r       ON r.id = ur.role_id
@@ -54,7 +99,10 @@ router.get('/:id', requireAuth, async (req: Request, res: Response) => {
   try {
     const rows = await withClient((c) =>
       c.query(
-        `SELECT DISTINCT u.id, u.public_id, u.username, u.display_name
+        `SELECT DISTINCT
+           u.id, u.public_id, u.username, u.display_name,
+           u.dentist_title, u.dentist_specialty, u.dentist_bio,
+           u.dentist_initials, u.dentist_accent
          FROM users u
          JOIN user_roles ur ON ur.user_id = u.id
          JOIN roles r       ON r.id = ur.role_id

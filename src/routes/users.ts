@@ -42,10 +42,17 @@ const patchMeSchema = z.object({
   password:         z.string().min(8).max(100).optional(),
 });
 
+const dentistProfileSchema = z.object({
+  title:     z.string().min(1).max(40).optional(),
+  specialty: z.string().min(1).max(80).optional(),
+  bio:       z.string().max(600).optional(),
+  initials:  z.string().min(1).max(4).optional(),
+  accent:    z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'Hex color like #0EA5E9').optional(),
+});
+
 const adminPatchSchema = patchMeSchema.extend({
-  // Admin may also set these.
-  username:     z.string().min(3).max(32).optional(),
-  email:        z.string().email().optional(),
+  username: z.string().min(3).max(32).optional(),
+  email:    z.string().email().optional(),
 });
 
 // ------------------------------------------------------------
@@ -63,22 +70,35 @@ function shapeUser(u: any) {
     nric: u.nric,
     birthday: u.birthday,
     address: {
-      line1: u.address_line1,
-      line2: u.address_line2,
-      city: u.city,
+      line1:    u.address_line1,
+      line2:    u.address_line2,
+      city:     u.city,
       postcode: u.postcode,
-      state: u.state,
+      state:    u.state,
     },
     emergencyContact: {
-      name: u.ec_name,
-      phone: u.ec_phone,
+      name:         u.ec_name,
+      phone:        u.ec_phone,
       relationship: u.ec_relationship,
+    },
+    dentist: {
+      title:     u.dentist_title     ?? null,
+      specialty: u.dentist_specialty ?? null,
+      bio:       u.dentist_bio       ?? null,
+      initials:  u.dentist_initials  ?? null,
+      accent:    u.dentist_accent    ?? null,
     },
     is_super_admin: u.is_super_admin,
     created_at: u.created_at,
     updated_at: u.updated_at,
   };
 }
+
+// ============================================================
+// SELF routes  (/me)
+// These must all be declared BEFORE the /:id routes below,
+// otherwise Express matches '/me' as an :id parameter.
+// ============================================================
 
 // ------------------------------------------------------------
 // GET /api/users/me
@@ -164,7 +184,6 @@ router.delete(
   requireAuth,
   requirePermission('profile.delete.self'),
   async (req: Request, res: Response) => {
-    // Safety: Super Admin cannot self-delete via this route.
     if (req.auth!.snapshot.isSuperAdmin) {
       return res.status(403).json({
         error: 'Super Admin cannot self-delete. Demote via env change first.',
@@ -179,6 +198,55 @@ router.delete(
     }
   }
 );
+
+// ------------------------------------------------------------
+// PATCH /api/users/me/dentist-profile — dentist self profile
+// Must be declared BEFORE /:id routes.
+// ------------------------------------------------------------
+
+router.patch(
+  '/me/dentist-profile',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const snap = req.auth!.snapshot;
+
+    if (!snap.isSuperAdmin && !snap.roleKeys.includes('dentist')) {
+      return res.status(403).json({ error: 'Dentist role required' });
+    }
+
+    const parsed = dentistProfileSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
+    }
+    const p = parsed.data;
+
+    const sets: string[] = [];
+    const vals: any[] = [];
+    let i = 1;
+    if (p.title     !== undefined) { sets.push(`dentist_title=$${i++}`);     vals.push(p.title); }
+    if (p.specialty !== undefined) { sets.push(`dentist_specialty=$${i++}`); vals.push(p.specialty); }
+    if (p.bio       !== undefined) { sets.push(`dentist_bio=$${i++}`);       vals.push(p.bio); }
+    if (p.initials  !== undefined) { sets.push(`dentist_initials=$${i++}`);  vals.push(p.initials); }
+    if (p.accent    !== undefined) { sets.push(`dentist_accent=$${i++}`);    vals.push(p.accent); }
+
+    if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    vals.push(req.auth!.userId);
+
+    try {
+      const row = await withClient((c) =>
+        c.query(`UPDATE users SET ${sets.join(', ')} WHERE id=$${i} RETURNING *`, vals)
+      );
+      return res.json(shapeUser(row.rows[0]));
+    } catch (err) {
+      console.error('[users.patch.dentistProfile]', err);
+      return res.status(500).json({ error: 'Internal error' });
+    }
+  }
+);
+
+// ============================================================
+// ADMIN routes
+// ============================================================
 
 // ------------------------------------------------------------
 // GET /api/users — list all users (admin)
@@ -306,7 +374,6 @@ router.delete(
   async (req: Request, res: Response) => {
     const { id } = req.params;
 
-    // Safety: cannot delete the Super Admin.
     const target = await withClient((c) =>
       c.query<{ is_super_admin: boolean }>('SELECT is_super_admin FROM users WHERE id = $1', [id])
     );
