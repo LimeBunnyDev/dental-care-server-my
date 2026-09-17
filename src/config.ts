@@ -1,5 +1,6 @@
 /**
- * Centralized config — reads from .env (loaded inline below) and exposes a typed object.
+ * Centralized config. Loads .env once, exposes a typed object.
+ * Import this instead of touching process.env anywhere else.
  */
 
 import * as fs from 'node:fs';
@@ -7,13 +8,13 @@ import * as path from 'node:path';
 
 const envPath = path.resolve(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
-  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
+  for (const raw of fs.readFileSync(envPath, 'utf8').split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
     if (eq < 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    const val = trimmed.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '');
+    const key = line.slice(0, eq).trim();
+    const val = line.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '');
     if (!(key in process.env)) process.env[key] = val;
   }
 }
@@ -28,9 +29,18 @@ function required(name: string): string {
   return v;
 }
 
+function optional(name: string, fallback: string): string {
+  return process.env[name] ?? fallback;
+}
+
 export const config = {
   databaseUrl: required('DATABASE_URL'),
-  port: Number(process.env.PORT || 4000),
-  webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:8081',
-  nodeEnv: process.env.NODE_ENV ?? 'development',
+  jwtSecret:   required('JWT_SECRET'),
+  port:        Number(optional('PORT', '4000')),
+  webOrigin:   optional('WEB_ORIGIN', 'http://localhost:8081'),
+  nodeEnv:     optional('NODE_ENV', 'development'),
+  superAdminUsername: optional('SUPER_ADMIN_USERNAME', '').toLowerCase(),
+  isProd:      optional('NODE_ENV', 'development') === 'production',
 } as const;
+
+export type Config = typeof config;

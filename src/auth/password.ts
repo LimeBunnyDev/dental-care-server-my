@@ -1,5 +1,8 @@
-// src/utils/password.ts
-import bcrypt from 'bcrypt';
+/**
+ * Password hashing. Single source of truth — bcryptjs (pure JS, no native build).
+ */
+
+import bcrypt from 'bcryptjs';
 
 const SALT_ROUNDS = 10;
 
