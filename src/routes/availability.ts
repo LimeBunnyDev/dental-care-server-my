@@ -75,7 +75,6 @@ const putSchema = z.object({
 // ------------------------------------------------------------
 
 router.get('/:dentistId', requireAuth, async (req: Request, res: Response) => {
-  const snap = req.auth!.snapshot;
   const dentistId = param(req, 'dentistId');
   const date = query(req, 'date');
 
@@ -83,15 +82,10 @@ router.get('/:dentistId', requireAuth, async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Missing or invalid ?date=YYYY-MM-DD' });
   }
 
-  const isSelf = dentistId === req.auth!.userId;
-  const canViewAny = snap.isSuperAdmin || snap.permissions.has('availability.view.all');
-  const canViewSelf = snap.permissions.has('availability.view.self');
-  if (!isSelf && !canViewAny) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-  if (isSelf && !canViewSelf && !canViewAny) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
+  // Reading a dentist's public slot availability is a patient-facing
+  // feature — any authenticated user may do it. Management-only views
+  // (e.g. seeing historical overrides) remain gated by `availability.view.all`
+  // on their own endpoints.
 
   try {
     // 1. Load overrides (if any) for this date.
