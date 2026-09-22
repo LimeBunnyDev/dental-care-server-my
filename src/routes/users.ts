@@ -32,11 +32,18 @@ const emergencyContactSchema = z.object({
   relationship: z.string().max(60).optional(),
 });
 
+// Strip empty strings from incoming payloads so `.optional()` treats them
+// as "not provided". This matches how HTML forms behave.
+const emptyToUndefined = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((v) => (v === '' ? undefined : v), schema);
+
 const patchMeSchema = z.object({
-  display_name:     z.string().min(1).max(60).optional(),
-  phone:            z.string().min(1).max(30).optional(),
-  nric:             z.string().min(1).max(20).optional(),
-  birthday:         z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  display_name: emptyToUndefined(z.string().min(1).max(60).optional()),
+  phone:        emptyToUndefined(z.string().min(1).max(30).optional()),
+  nric:         emptyToUndefined(z.string().min(1).max(20).optional()),
+  birthday:     emptyToUndefined(
+    z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+  ),
   address:          addressSchema.optional(),
   emergencyContact: emergencyContactSchema.optional(),
   password:         z.string().min(8).max(100).optional(),
