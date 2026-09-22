@@ -26,18 +26,30 @@ const app = express();
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow same-origin/no-origin (curl, mobile fetch), local dev, and
-    // the configured WEB_ORIGIN (may be comma-separated).
+    // Allow no-origin requests (curl, server-to-server).
     if (!origin) return cb(null, true);
-    const allowed = [config.webOrigin, 'http://localhost:8081', 'http://localhost:19006']
-      .flatMap((s) => s.split(',').map((x) => x.trim()))
+
+    // Allow any localhost port in dev/preview (Expo web runs on random ports).
+    if (/^http:\/\/localhost:\d+$/.test(origin)) return cb(null, true);
+    if (/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) return cb(null, true);
+
+    // Explicit allow list from env.
+    const allowed = (config.webOrigin || '')
+      .split(',')
+      .map((s) => s.trim())
       .filter(Boolean);
     if (allowed.includes(origin)) return cb(null, true);
-    // Expo dev clients also come from LAN IPs; in dev, allow all.
-    if (!config.isProd) return cb(null, true);
+
+    // Allow the deployed Expo web + any *.onrender.com preview.
+    if (/^https:\/\/[a-z0-9-]+\.onrender\.com$/.test(origin)) return cb(null, true);
+
+    // Otherwise, block.
     return cb(new Error(`CORS: origin ${origin} not allowed`));
   },
   credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  optionsSuccessStatus: 204,
 }));
 
 app.use(express.json({ limit: '256kb' }));
