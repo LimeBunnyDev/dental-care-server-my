@@ -14,6 +14,7 @@ import authRouter from './routes/auth';
 import usersRouter from './routes/users';
 import userRolesRouter from './routes/user-roles';
 import rolesRouter from './routes/roles';
+import permissionsRouter from './routes/permissions';
 import dentistsRouter from './routes/dentists';
 import appointmentsRouter from './routes/appointments';
 import availabilityRouter from './routes/availability';
@@ -80,6 +81,7 @@ app.use('/api/users/:userId/roles', userRolesRouter);
 app.use('/api/users', usersRouter);
 
 app.use('/api/roles', rolesRouter);
+app.use('/api/permissions', permissionsRouter);
 app.use('/api/dentists', dentistsRouter);
 app.use('/api/appointments', appointmentsRouter);
 app.use('/api/availability', availabilityRouter);
